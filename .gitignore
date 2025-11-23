@@ -1,5 +1,6 @@
 .htpasswd
 .env_secrets
+frontend/nginx.conf
 
 HELP.md
 target/
