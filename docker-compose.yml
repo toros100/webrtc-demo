@@ -1,0 +1,38 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_COTURN_URLS: ${VITE_COTURN_URLS}
+    container_name: frontend
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - backend
+    networks:
+      - test-network
+    restart: unless-stopped
+
+  backend:
+    build:
+        context: ./backend
+        dockerfile: Dockerfile
+    ports:
+        - "8080:8080"
+    env_file:
+      - .env_secrets
+    volumes:
+      - ./logs:/app/logs
+    container_name: backend
+    networks:
+      - test-network
+    restart: unless-stopped
+
+networks:
+  test-network:
+    driver: bridge
+

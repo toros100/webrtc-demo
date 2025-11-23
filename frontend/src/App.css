@@ -1,0 +1,35 @@
+@import "tailwindcss";
+@import "@fontsource/inter";
+@plugin "@tailwindcss/forms";
+
+
+@layer base {
+    body {
+        @apply bg-neutral-800 text-neutral-100 min-h-screen p-0 lg:p-0 pb-0 antialiased max-w-screen-xl m-auto;
+        font-family: 'Inter', sans-serif;
+    }
+}
+
+
+@layer components {
+    .btn {
+        @apply
+        bg-neutral-900 border-1 border-neutral-600
+        hover:bg-zinc-900 hover:border-neutral-500
+        focus:ring-neutral-600 focus:ring-2 focus:border-neutral-900
+        text-neutral-100
+        m-0.5 px-4 py-2
+        rounded-lg
+        cursor-pointer
+        h-10
+        w-fit
+        ;
+    }
+}
+
+
+#root {
+    margin: 0;
+    padding: 0;
+    top: 0;
+}
