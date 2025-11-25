@@ -9,7 +9,7 @@ export const BitratesDisplay = ({userId} : {userId: string}) => {
     return (
         <div className="flex flex-row">
             <ArrowLeftRight size="2rem"></ArrowLeftRight>
-            <div className="mx-2 font-mono text-xs">in: {incoming} kbit/s <br/> out: {outgoing} kbit/s</div>
+            <div className="font-mono text-xs">in: {incoming} kbit/s <br/> out: {outgoing} kbit/s</div>
         </div>
     )
 }

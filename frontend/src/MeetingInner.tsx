@@ -1,11 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {useWebSocket} from "./useWebSocket.ts";
 import WebSocketStatus from "./WebSocketStatus";
 import type {InfoMessage} from "./ZodSchemas";
 import DummyAudioElement from "./DummyAudioElement.tsx";
 import { useMeetingStore } from "./useMeetingStore";
 import UserFrame from "./UserFrame.tsx";
-import {WebRTCConnectionManager} from "./WebRTCConnectionManager.ts";
+import {type ConnectionState, WebRTCConnectionManager} from "./WebRTCConnectionManager.ts";
 import {useShallow} from "zustand/react/shallow";
 import {useMediaStore} from "./MediaStore.ts";
 import {useMediaManagement} from "./useMediaManagement.ts";
@@ -13,34 +13,26 @@ import {LayoutGroup, motion} from "motion/react";
 import {RTCStatsStore} from "./RTCStatsStore.ts";
 import {useTurnCredentials} from "./useTurnCredentials.ts";
 import ControlPanel from "./ControlPanel.tsx";
+import {useNavigate} from "react-router-dom";
 
-export default function MeetingInner({myId, setInMeeting} : {myId:string, setInMeeting : (b: boolean) => void}) {
+export default function MeetingInner({myId} : {myId:string, setInMeeting : (b: boolean) => void}) {
 
-    const m = useRef<null|WebRTCConnectionManager>(null);
-
-    const participants = useMeetingStore(useShallow(state => Object.keys(state.usersConnected)))
-
+    const navigate = useNavigate()
+    const participants = useMeetingStore(useShallow(state => Object.keys(state.usersReachable)))
     const {activate, prepareAndSend, isConnected, requestInfo} = useWebSocket();
-
-
-    if (m.current) {
-        m.current.setConnectedToSignaling(isConnected)
-    }
-
     const {credentials} = useTurnCredentials();
     const [focusedUser, setFocusedUser] = useState<string | null>(null);
-    const {registerOrUpdateMediaTracks} = useMediaManagement()
+    const {registerOrUpdateMediaTracks, clearUserMedia, clearAllMedia} = useMediaManagement()
 
+    const [manager] = useState(() => new WebRTCConnectionManager(myId, prepareAndSend, requestInfo, credentials))
+    manager.setSelfConnectedToSignaling(isConnected)
 
     useEffect(() => {
-        if (!m.current) {
-            m.current = new WebRTCConnectionManager(myId, prepareAndSend, requestInfo, credentials);
-            m.current.setConnectedToSignaling(isConnected)
 
             // @ts-expect-error so i can access the manager in the console for poking around
-            window.rtcmanager = m.current;
+            window.rtcmanager = manager.current;
 
-            m.current.onTrack = (userId, _track, streams) => {
+            manager.onTrack = (userId, _track, streams) => {
 
                 const stream = streams[0];
                 const prevStream = useMediaStore.getState().remoteStream[userId]
@@ -57,26 +49,25 @@ export default function MeetingInner({myId, setInMeeting} : {myId:string, setInM
                     }
                 }
             }
-        }
 
-        m.current.onConnectionStateChange = (userId:string, connectionState: RTCPeerConnectionState) => {
-            const record = {[userId]: connectionState} as Record<string, RTCPeerConnectionState>;
-            useMeetingStore.getState().updateUserRTCStates(record)
-        }
 
-        m.current.onBitratesCalculated = (userId: string, {incoming, outgoing}) => {
+        manager.onBitratesCalculated = (userId: string, {incoming, outgoing}) => {
             RTCStatsStore.getState().setUserBitrates(userId, {incoming, outgoing})
         }
 
-        m.current.onDisconnect = (userId: string) => {
+        manager.onDisconnect = (userId: string) => {
             useMediaStore.getState().setStoredMediaTracks(userId, [])
         }
 
-        const initialParticipants = Object.keys(useMeetingStore.getState().usersConnected)
+        manager.onConnectionStateChange = (userId: string, state: ConnectionState) => {
+            queueMicrotask(() => useMeetingStore.getState().updateUserConnectionState(userId, state))
+        }
+
+        const initialParticipants = Object.keys(useMeetingStore.getState().usersReachable)
         initialParticipants.forEach((userId) => {
             if (userId !== myId) {
-                const peerConnectedToSignaling = useMeetingStore.getState().usersConnected[userId]
-                m.current!.registerPeer(userId, peerConnectedToSignaling)
+                const peerConnectedToSignaling = useMeetingStore.getState().usersReachable[userId]
+                manager.registerPeer(userId, peerConnectedToSignaling)
             }
 
         })
@@ -89,55 +80,64 @@ export default function MeetingInner({myId, setInMeeting} : {myId:string, setInM
         }
 
         const initialTracks = useMediaStore.getState().mediaTracks[myId] ?? []
-        m.current.setInputTracks(initialTracks);
+        manager.setInputTracks(initialTracks);
 
         const unsubscribeMediaStore = useMediaStore.subscribe((state) => {
-            m.current?.setInputTracks(state.mediaTracks[myId] ?? []);
+            manager.setInputTracks(state.mediaTracks[myId] ?? []);
         })
 
         const unsubscribeMeetingStore = useMeetingStore.subscribe((state, prevState) => {
 
-            const {joined, left} = usersDiff(Object.keys(prevState.usersConnected), Object.keys(state.usersConnected));
+            const {joined, left} = usersDiff(Object.keys(prevState.usersReachable), Object.keys(state.usersReachable));
 
             joined.forEach(userId => {
                 if (userId !== myId) {
-                    const peerConnected = state.usersConnected[userId];
-                    m.current!.registerPeer(userId, peerConnected)
+                    const peerConnected = state.usersReachable[userId];
+                    manager.registerPeer(userId, peerConnected)
                 }
             });
             if (left.length > 0) {
-                left.forEach(userId => m.current?.unregisterPeer(userId));
+                left.forEach(userId => {
+                    manager.unregisterPeer(userId)
+                    RTCStatsStore.getState().clearUser(userId)
+                });
                 useMeetingStore.getState().removeUsers(left)
+                clearUserMedia(left)
+
 
             }
 
-            Object.keys(state.usersConnected).forEach((userId) => {
+            Object.keys(state.usersReachable).forEach((userId) => {
                 if (userId !== myId) {
-                    const peerConnected = state.usersConnected[userId];
-                    m.current?.setPeerConnectedToSignaling(userId, peerConnected);
+                    const peerConnected = state.usersReachable[userId];
+                    manager.setPeerConnectedToSignaling(userId, peerConnected);
                 }
             })
         })
 
-        activate(infoMessageHandler, m.current.getIncomingSignalCallback(), closeEventHandler)
+        activate(infoMessageHandler, manager.getIncomingSignalCallback(), closeEventHandler)
 
         return () => {
             unsubscribeMeetingStore()
             unsubscribeMediaStore()
-            useMeetingStore.getState().reset()
-            m.current?.destroy()
+            useMeetingStore.getState().clear()
+            clearAllMedia()
+            RTCStatsStore.getState().clear()
+            manager.destroy()
         }
     }, []);
 
 
     function infoMessageHandler(message : InfoMessage) {
-        useMeetingStore.getState().replaceUsersConnected(message.connected)
+        useMeetingStore.getState().replaceUsersReachable(message.connected)
     }
 
     function closeEventHandler(ev : CloseEvent) {
-        console.error("WS closed with code", ev.code)
-        if (ev.code >= 4000) { // todo: better handling of errors codes, >= 4000 are ones for deliberate closing by backend
-            setInMeeting(false)
+        if (ev.code >= 4000) {
+            navigate("/")
+            alert(ev.reason)
+        } else {
+            console.error("WS closed with code", ev.code)
         }
 
     }

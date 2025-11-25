@@ -21,12 +21,11 @@ const UserMediaGetter = ({dismiss} : {dismiss: () => void}) => {
     } = useUserMedia()
 
     const {resumeIfSuspended, registerOrUpdateMediaTracks} = useMediaManagement()
-
     const {userId:myId} = useIdentity()
     const acceptButtonOnClick = async () => {
-        await resumeIfSuspended() // audio context requires user interaction
-        const localStream = await requestUserMedia();
+        resumeIfSuspended() // AudioContext requires user interaction
 
+        const localStream = await requestUserMedia();
 
         if (localStream === null) {
             registerOrUpdateMediaTracks(myId, [])
@@ -41,11 +40,8 @@ const UserMediaGetter = ({dismiss} : {dismiss: () => void}) => {
             } else {
                 registerOrUpdateMediaTracks(myId, localStream.getTracks())
             }
-
         }
-
     }
-
 
     return <>
         <div className="flex flex-col fixed inset-0 backdrop-blur-lg items-center justify-center z-50" onClick={dismiss}>

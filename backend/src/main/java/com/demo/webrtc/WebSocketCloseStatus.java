@@ -7,7 +7,7 @@ public enum WebSocketCloseStatus {
     MEETING_NOT_FOUND(4002, "Meeting not found"),
     MEETING_ENDED(4004, "Meeting ended"),
     SERVER_ERROR(5001, "Server Error"),
-    DUPLICATE_SESSION(4005, "Duplicate session for meeting");
+    DUPLICATE_SESSION(4005, "Duplicate session for meeting (use a second anonymous window or two different browsers for local testing)");
 
     private final int code;
     private final String reason;

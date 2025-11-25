@@ -18,10 +18,18 @@ export const MediaManagementProvider = ({children} : {children : ReactNode}) => 
 
     const MAX_GAIN = 2;
 
-    const audioProcessingChains = useRef<Map<string, AudioProcessingChain>>(new Map());
+    const [audioProcessingChains] = useState<Map<string, AudioProcessingChain>>(() => new Map());
     const [audioContext] = useState<AudioContext>(() => new AudioContext());
-    const [monitorGainNode] = useState<GainNode>(() => audioContext.createGain());
-    const [masterGainNode] = useState<GainNode>(() => audioContext.createGain());
+    const [monitorGainNode] = useState<GainNode>(() => {
+        const monitorGain = audioContext.createGain()
+        monitorGain.connect(audioContext.destination)
+        return monitorGain;
+    });
+    const [masterGainNode] = useState<GainNode>(() => {
+        const masterGain = audioContext.createGain();
+        masterGain.connect(audioContext.destination)
+        return masterGain;
+    });
 
     const localUserAudioTrack = useRef<MediaStreamTrack|null>(null);
 
@@ -40,7 +48,7 @@ export const MediaManagementProvider = ({children} : {children : ReactNode}) => 
         if (!userId || val === null || val === undefined) {
             throw new Error("userId, val must be provided.")
         }
-        const chain = audioProcessingChains.current.get(userId);
+        const chain = audioProcessingChains.get(userId);
         if (chain) {
             const valClamped = Math.max(Math.min(val, MAX_GAIN), 0);
             chain.setGain(valClamped);
@@ -52,7 +60,7 @@ export const MediaManagementProvider = ({children} : {children : ReactNode}) => 
 
 
     const getVolume = useCallback((userId: string) => {
-        const chain = audioProcessingChains.current.get(userId);
+        const chain = audioProcessingChains.get(userId);
         if (chain) {
             return chain.calculateVolume()
         } else {
@@ -62,45 +70,41 @@ export const MediaManagementProvider = ({children} : {children : ReactNode}) => 
 
 
     const registerUser = useCallback((userId: string) => {
-        if (userId === myId) {
-            throw new Error("cant register own userId")
-        }
-
-        if (audioProcessingChains.current.has(userId)) {
+        if (audioProcessingChains.has(userId)) {
             return;
         } else {
             const chain = new AudioProcessingChain(userId, audioContext, MAX_GAIN);
             chain.setGain(useMediaStore.getState().gain[userId] ?? 1);
-            chain.connect(masterGainNode);
-            audioProcessingChains.current.set(userId, chain);
+            if (userId === myId) {
+                chain.connect(monitorGainNode);
+            } else {
+                chain.connect(masterGainNode)
+            }
+            audioProcessingChains.set(userId, chain);
         }
-
     },[myId]);
 
     const unregisterUser = useCallback((userId: string) => {
-        if (userId === myId) {
-            throw new Error("cant unregister own userId")
-        }
-
-        const chain = audioProcessingChains.current.get(userId);
-        audioProcessingChains.current.delete(userId);
+        const chain = audioProcessingChains.get(userId);
+        audioProcessingChains.delete(userId);
 
         if (chain) {
             chain.cleanup()
         }
 
         useMediaStore.getState().clearUser(userId);
-
     },[myId])
 
 
 
+
+
     const registerOrUpdateAudioTrack = (userId: string, track: MediaStreamTrack) => {
-        let chain = audioProcessingChains.current.get(userId);
+        let chain = audioProcessingChains.get(userId);
         if (chain === undefined) {
             registerUser(userId)
         }
-        chain = audioProcessingChains.current.get(userId)
+        chain = audioProcessingChains.get(userId)
         chain!.registerOrUpdateTrack(track)
 
         if (userId === myId) {
@@ -115,7 +119,7 @@ export const MediaManagementProvider = ({children} : {children : ReactNode}) => 
         }
         const audioTrack = tracks.find((t) => t.kind === "audio");
         if (audioTrack === undefined) {
-            audioProcessingChains.current.get(userId)?.clearTrack()
+            audioProcessingChains.get(userId)?.clearTrack()
             if (userId === myId) {
                 localUserAudioTrack.current = null;
             }
@@ -142,10 +146,12 @@ export const MediaManagementProvider = ({children} : {children : ReactNode}) => 
 
     useEffect(() => {
         if (deafened) {
-            masterGainNode.gain.value = 0
-            setMuted(true);
+            masterGainNode.disconnect()
+            //masterGainNode.gain.value = 0
+            //setMuted(true);
         } else {
-            masterGainNode.gain.value = 1
+            masterGainNode.connect(audioContext.destination)
+            //masterGainNode.gain.value = 1
         }
     }, [deafened]);
 
@@ -156,27 +162,40 @@ export const MediaManagementProvider = ({children} : {children : ReactNode}) => 
         }
     }, [muted]);
 
+    const clearUserMedia = useCallback((userIds: string[]) => {
+        userIds.forEach((userId: string) => {
+            unregisterUser(userId);
+        })
+
+    },[])
+
+    const clearAllMedia = useCallback(() => {
+        const userIds = Array.from(audioProcessingChains.keys());
+        clearUserMedia(userIds);
+        clearStore(); // defensive, should already be empty now?
+
+    },[])
 
     useEffect(() => {
-        if (!audioProcessingChains.current.has(myId)) {
+        /*if (!audioProcessingChains.has(myId)) {
             const chain = new AudioProcessingChain(myId, audioContext, MAX_GAIN);
             chain.connect(monitorGainNode)
-            audioProcessingChains.current.set(myId, chain);
-        }
+            audioProcessingChains.set(myId, chain);
+        }*/
 
-        masterGainNode.connect(audioContext.destination);
+        registerUser(myId)
 
-        return clearStore;
+        return clearAllMedia;
     }, []);
 
 
     return (
         <MediaManagementContext value={{
             setMonitorEnabled,
-            registerUser,
-            unregisterUser,
             resumeIfSuspended,
             registerOrUpdateMediaTracks,
+            clearUserMedia,
+            clearAllMedia,
             setAndStoreGain,
             getVolume,
             muted,

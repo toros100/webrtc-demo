@@ -1,34 +1,32 @@
 import { create } from "zustand";
+import type {ConnectionState} from "./WebRTCConnectionManager.ts";
+
 
 type MeetingStore = {
-    usersConnected: Record<string, boolean>;
-    replaceUsersConnected: (record: Record<string, boolean>) => void;
-    userRTCStates: Record<string, RTCPeerConnectionState>;
-    updateUserRTCStates: (record: Record<string, RTCPeerConnectionState>) => void;
+    usersReachable: Record<string, boolean>;
+    replaceUsersReachable: (record: Record<string, boolean>) => void;
+    userConnectionStates: Record<string, ConnectionState>;
+    updateUserConnectionState: (userId:string, st: ConnectionState) => void;
     removeUsers: (users: string[]) => void;
-    reset: () => void;
+    clear: () => void;
 }
 
 export const useMeetingStore = create<MeetingStore>((set) => ({
-    usersConnected: {},
-    replaceUsersConnected: (record) => set(() => {
-        return ({usersConnected: record})
+    usersReachable: {},
+    replaceUsersReachable: (record) => set(() => {
+        return ({usersReachable: record})
     }),
-    userRTCStates: {},
-    updateUserRTCStates: (record) => set(state => {
-        return ({
-        userRTCStates: {
-            ...state.userRTCStates,
-            ...record
-            }
-    })}),
+    userConnectionStates: {},
+    updateUserConnectionState: (userId, st) => set(state => {
+        return ({userConnectionStates: ({...state.userConnectionStates, [userId]: st})})
+    }),
     removeUsers: (users) => set(state => {
-        const usersConnected = Object.fromEntries(Object.entries(state.usersConnected).filter(([id,]) =>  !users.includes(id)))
-        const userRTCStates = Object.fromEntries(Object.entries(state.userRTCStates).filter(([id,]) =>  !users.includes(id)))
-        return {usersConnected: usersConnected, userRTCStates: userRTCStates};
+        const usersReachable = Object.fromEntries(Object.entries(state.usersReachable).filter(([id,]) =>  !users.includes(id)))
+        const userConnectionStates = Object.fromEntries(Object.entries(state.userConnectionStates).filter(([id,]) =>  !users.includes(id)))
+        return {usersReachable: usersReachable, userConnectionStates: userConnectionStates};
     }),
-    reset: () => set(() => ({
-        usersConnected: {},
-        userRTCStates: {},
+    clear: () => set(() => ({
+        usersReachable: {},
+        userConnectionStates: {},
     }))
 }));

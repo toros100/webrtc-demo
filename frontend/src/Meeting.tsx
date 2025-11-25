@@ -46,6 +46,13 @@ export default function Meeting() {
         } else {
             alert("Error: " + body)
             setInMeeting(false)
+
+            if (res.status !== 409) {
+                // 409 is "meeting full", which allows you to stay on the meeting page and try again
+                // anything else is not recoverable
+                navigate("/")
+            }
+
         }
     }
 

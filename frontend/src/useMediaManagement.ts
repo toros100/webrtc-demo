@@ -7,9 +7,9 @@ type MediaManagementContext = {
     muted: boolean,
     deafened: boolean,
     setDeafened: (deafened: boolean) => void,
-    registerUser: (userId: string) => void,
-    unregisterUser: (userId: string) => void,
     registerOrUpdateMediaTracks: (userId:string, tracks:MediaStreamTrack[]) => void,
+    clearUserMedia: (userIds: string[]) => void,
+    clearAllMedia: () => void,
     resumeIfSuspended: () => void,
     setAndStoreGain: (userId: string, val: number) => void,
     getVolume: (userId: string) => number;

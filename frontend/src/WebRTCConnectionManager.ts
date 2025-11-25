@@ -1,5 +1,8 @@
 import {WebRTCWrapper} from "./WebRTCWrapper.ts";
 import type {ExtRTCSignalingMessage, OutgoingExtRTCSignalingMessage} from "./ZodSchemas.ts";
+
+export type ConnectionState = "waiting" | "connecting" | "connected" | "failed"
+
 export class WebRTCConnectionManager {
 
     connections : Map<string, WebRTCWrapper>;
@@ -15,8 +18,7 @@ export class WebRTCConnectionManager {
     turnCredentials: {username: string, password: string} | null = null;
 
     onBitratesCalculated?: (userId: string, stats: {incoming:number, outgoing:number}) => void;
-    onConnectionStateChange?: (userId: string, state: RTCPeerConnectionState) => void;
-    onSignalingStateChange?: (userId: string, state: RTCSignalingState) => void;
+    onConnectionStateChange?: (userId: string, state: ConnectionState) => void;
     onTrack?: (userId: string, track: MediaStreamTrack, streams: MediaStream[]) => void;
     onDisconnect?: (userId: string) => void;
 
@@ -69,13 +71,12 @@ export class WebRTCConnectionManager {
 
     }
 
-    _onSignalingStateChange(userId: string, state: RTCSignalingState): void {
-        this.onSignalingStateChange?.(userId, state);
-    }
 
+    /*
     _onConnectionStateChange(userId: string, state: RTCPeerConnectionState): void {
         this.onConnectionStateChange?.(userId, state);
     }
+    */
 
     _onTrack(userId: string, track: MediaStreamTrack, streams: MediaStream[]): void {
 
@@ -107,7 +108,8 @@ export class WebRTCConnectionManager {
             this.peerConnectedToSignaling.set(userId, connected);
             // peer just disconnected from signaling
             // kill if data channel (internal signaling) not already working
-            if (!peer.controlChannelOperational) {
+            // note that this is not the same as connectionState as on RTCPeerConnection objects
+            if (peer.connectionState !== "connected") {
                 peer.wait()
                 this.peerWaiting.set(userId, true)
             }
@@ -125,7 +127,7 @@ export class WebRTCConnectionManager {
     }
 
 
-    setConnectedToSignaling(connected: boolean) {
+    setSelfConnectedToSignaling(connected: boolean) {
 
         const prev = this.selfConnectedToSignaling;
         this.selfConnectedToSignaling = connected
@@ -134,7 +136,7 @@ export class WebRTCConnectionManager {
             // just lost signaling
             // bonk every peer that is not already self-sufficient (internal signaling via datachannel)
             this.connections.forEach((peer, userId) => {
-                if (!peer.controlChannelOperational) {
+                if (peer.connectionState !== "connected") {
                     peer.wait()
                     this.peerWaiting.set(userId, true)
                 }
@@ -206,11 +208,18 @@ export class WebRTCConnectionManager {
             this.peerConnectedToSignaling.set(userId, peerConnectedToSignaling)
             this.peerWaiting.set(userId, true)
 
-            peer.onConnectionStateChange = (state: RTCPeerConnectionState) => this._onConnectionStateChange?.(userId, state);
+            //peer.onRTCConnectionStateChange = (state: RTCPeerConnectionState) => this._onConnectionStateChange?.(userId, state);
             peer.onTrack = (track: MediaStreamTrack, streams: MediaStream[]) => this._onTrack?.(userId, track, streams);
-            peer.onSignalingStateChange = (state: RTCSignalingState) => this._onSignalingStateChange?.(userId, state);
 
-            peer.onDisconnect = () => this.onDisconnect?.(userId);
+            peer.onConnectionStateChange = (state: ConnectionState) => this.onConnectionStateChange?.(userId, state);
+
+            peer.onDisconnect = () => {
+                const reachable = this.peerConnectedToSignaling.get(userId);
+                if (!reachable) {
+                   peer.wait()
+                }
+                this.onDisconnect?.(userId)
+            };
 
             peer.onBitratesCalculated = ({incoming, outgoing}) => this.onBitratesCalculated?.(userId, {
                 incoming,
@@ -248,7 +257,6 @@ export class WebRTCConnectionManager {
         }
 
         this.onConnectionStateChange = undefined;
-        this.onSignalingStateChange = undefined;
         this.onTrack = undefined;
         this.onDisconnect = undefined;
         this.onBitratesCalculated = undefined;

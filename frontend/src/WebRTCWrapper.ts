@@ -10,6 +10,7 @@ import { nanoid } from "nanoid";
 // @ts-expect-error already active after import
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import adapter from "webrtc-adapter";
+import type {ConnectionState} from "./WebRTCConnectionManager.ts";
 
 type PartialOutgoingMessage = {
     type: "offer" | "answer" | "ice-candidate",
@@ -38,7 +39,8 @@ export class WebRTCWrapper {
     config: RTCConfiguration;
     processingSignals: boolean = false;
 
-    connectionState: RTCPeerConnectionState | null = null;
+    connectionState: ConnectionState = "waiting"
+    rtcConnectionState: RTCPeerConnectionState | null = null;
     signalingState: RTCSignalingState | null = null;
 
     isConnecting : boolean = false;
@@ -59,7 +61,7 @@ export class WebRTCWrapper {
 
     controlChannel: RTCDataChannel | null = null;
 
-    controlChannelOperational: boolean = false;
+    //controlChannelOperational: boolean = false;
 
 
     wrapperStream : MediaStream = new MediaStream();
@@ -80,8 +82,10 @@ export class WebRTCWrapper {
     outgoingMessageCounter = 0;
     incomingMessageCounter = 0;
 
+    onConnectionStateChange?: (state: ConnectionState) => void;
+
     onTrack? : (track: MediaStreamTrack, streams: MediaStream[]) => void;
-    onConnectionStateChange? : (state: RTCPeerConnectionState) => void;
+    onRTCConnectionStateChange? : (state: RTCPeerConnectionState) => void;
     onSignalingStateChange? : (state: RTCSignalingState) => void;
     onDisconnect?: () => void;
 
@@ -92,6 +96,7 @@ export class WebRTCWrapper {
     constructor(peerId: string, myId: string, sendSignal: (msg: OutgoingExtRTCSignalingMessage) => void, config: RTCConfiguration, ) {
 
         this.tokenNegotiationState = "new";
+        this.connectionState = "waiting"
 
         if (peerId === myId) {
             throw new Error("Must have peerId !== myId")
@@ -113,26 +118,27 @@ export class WebRTCWrapper {
             }
         },500)
 
+        this.sendHeartbeatInterval = setInterval(() => {
+            this._sendHeartbeat()
+        }, 1000)
 
-        this._createFreshPeerObject()
+        this._createFreshPeerObject("constructor")
     }
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     _createFreshPeerObject(_reason?:string) {
+        // reason is just for tracing
 
         if (this.peerObjectPristine) {
             return;
         }
 
-        this.controlChannelOperational = false;
         this.token = nanoid(10)
+
         this.tokenNegotiationState = "new"
+
         this.incomingMessageCounter = 0;
         this.outgoingMessageCounter = 0;
-        if (this.sendHeartbeatInterval) {
-            clearInterval(this.sendHeartbeatInterval);
-            this.sendHeartbeatInterval = null;
-        }
 
         if (this.checkHeartbeatInterval) {
             clearInterval(this.checkHeartbeatInterval);
@@ -156,7 +162,7 @@ export class WebRTCWrapper {
         // cleanup
         this.ongoingNegotiation = false;
         this.controlChannel = null;
-        this.connectionState = null;
+        this.rtcConnectionState = null;
         this.signalingState = null;
         this.processingSignals = false;
         this.isConnecting = false;
@@ -165,6 +171,7 @@ export class WebRTCWrapper {
 
         this._addEventHandlers(peer);
         this.peerObjectPristine = true;
+
 
     }
 
@@ -195,10 +202,35 @@ export class WebRTCWrapper {
         this.unlock()
     }
 
+    _setConnectionState(newState: ConnectionState) {
 
-    _onConnectionStateChange(state : RTCPeerConnectionState) {
-        this.connectionState = state;
-        this.onConnectionStateChange?.(state);
+        const prevState = this.connectionState;
+
+        if (newState === prevState) {
+            return;
+        }
+
+        this.connectionState = newState;
+
+        if (newState === "waiting" || newState === "failed") {
+            this._createFreshPeerObject("connection state " + newState)
+        }
+
+        if (newState === "connected") {
+            this.setInputTracks(this.inputTracks)
+        }
+
+        if (newState === "connecting") {
+            this._negotiateToken()
+        }
+
+        this.onConnectionStateChange?.(newState);
+
+    }
+
+    _onRTCConnectionStateChange(state : RTCPeerConnectionState) {
+        this.rtcConnectionState = state;
+        this.onRTCConnectionStateChange?.(state);
     }
 
     _onSignalingStateChange(state: RTCSignalingState) {
@@ -206,35 +238,6 @@ export class WebRTCWrapper {
         this.onSignalingStateChange?.(state);
     }
 
-    destroy(): void {
-
-        this.clearQueue()
-
-        this.peer.ontrack = null;
-        this.peer.onconnectionstatechange = null;
-        this.peer.onsignalingstatechange = null;
-        this.peer.ondatachannel = null;
-        this.peer.onnegotiationneeded = null;
-
-        if (this.bitratesIntervalId !== null) {
-            clearInterval(this.bitratesIntervalId);
-        }
-
-        if (this.sendHeartbeatInterval !== null) {
-            clearInterval(this.sendHeartbeatInterval);
-        }
-
-        if (this.checkHeartbeatInterval !== null) {
-            clearInterval(this.checkHeartbeatInterval);
-        }
-
-
-        this.peer.close() // event handlers attached to peer should be cleaned up internally
-
-        // @ts-expect-error ref cleanup
-        this.sendSignal = null
-
-    }
 
     _calculateOutgoingBitrate = async () => {
 
@@ -311,10 +314,9 @@ export class WebRTCWrapper {
         if (peer !== this.peer) {
             return
         }
-        if (!this.controlChannelOperational) {
-            this.controlChannelOperational = true;
-            this._setInputTracks(this.inputTracks)
-        }
+
+        this._setConnectionState("connected")
+
         let msg;
         try {
             msg = JSON.parse(str)
@@ -333,11 +335,12 @@ export class WebRTCWrapper {
 
     setInputTracks(tracks : MediaStreamTrack[]) {
 
-        if (this.controlChannelOperational) {
-            console.log("[WebRTCWrapper] processing input tracks")
-            this._setInputTracks(tracks)
+        if (this.connectionState === "connected") {
+            this._setInputTracks(tracks).catch((err) => {
+                const error = err as Error
+                console.error("Error setting input tracks: " + error.name)
+            })
         } else {
-            console.log("[WebRTCWrapper] caching input tracks, will process when control channel connected")
             this.inputTracks = tracks
         }
     }
@@ -380,34 +383,34 @@ export class WebRTCWrapper {
         }
     }
 
-
     connect() {
-
         if (this.isConnecting) {
-            console.info("already connecting")
             return
         }
+
+        this._setConnectionState("connecting")
+
         this.isConnecting = true;
 
-        console.log("[WebRTCWrapper] connect()");
+        //console.log("[WebRTCWrapper] connect()");
 
-        this.negotiateToken();
+        this._negotiateToken();
         return;
     }
 
 
-    negotiateToken() {
+    _negotiateToken() {
         this.tokenNegotiationState = "requesting";
-        this.sendHeartbeat(this.peer)
+        this._sendHeartbeat()
     }
 
-    sendHeartbeat(peer: RTCPeerConnection) {
+    _sendHeartbeat() {
 
         // want to have some kind of heartbeat/timeout mechanism in any case, so might as well
         // use token negotiation messages as heartbeat. this has the added benefit of making them
         // impossible to "miss", which could leave the negotiation stuck and would require its own
         // timeout/retry mechanism.
-
+        const peer = this.peer
         if (this.tokenNegotiationState !== "new") {
             this._sendSignal(peer, {
                 type: this.tokenNegotiationState
@@ -416,17 +419,15 @@ export class WebRTCWrapper {
     }
 
 
-    setupControlChannel() {
-
+    _setupControlChannel() {
 
         const peer = this.peer;
         const controlChannel = peer.createDataChannel("control", {id:0, negotiated: true})
-
         const timeoutId = setTimeout(() => {
 
             if (controlChannel.readyState !== "open") {
                 console.error("failed to connect control channel after 15s, retrying")
-                this.handleControlChannelFailure(peer, controlChannel)
+                this._handleControlChannelFailure(peer, controlChannel)
 
             }
 
@@ -439,19 +440,8 @@ export class WebRTCWrapper {
                 controlChannel.close() // normally this should not happen, defensive cleanup i guess
             }
 
-            this.sendHeartbeatInterval = setInterval(() => {
-                this.sendHeartbeat(peer)
-
-                // i dont think there is any reliable trigger to use for updating the connection type,
-                // so i am just polling it
-                this.updateConnectionType(peer).catch((err) => {
-                    console.error("Error updating connection type:", err)
-                })
-
-
-            }, 1000)
-
         }
+
 
         controlChannel.onmessage =  (event ) => {
 
@@ -466,15 +456,13 @@ export class WebRTCWrapper {
             }
 
         }
-        controlChannel.onerror = () => this.handleControlChannelFailure(peer, controlChannel);
-        controlChannel.onclosing = () => this.handleControlChannelFailure(peer, controlChannel);
-        controlChannel.onclose = () => this.handleControlChannelFailure(peer, controlChannel);
+        controlChannel.onerror = () => this._handleControlChannelFailure(peer, controlChannel);
+        controlChannel.onclosing = () => this._handleControlChannelFailure(peer, controlChannel);
+        controlChannel.onclose = () => this._handleControlChannelFailure(peer, controlChannel);
 
         this.controlChannel = controlChannel
-
         return controlChannel
     }
-
 
     _cleanupDataChannel(dataChannel : RTCDataChannel) {
         dataChannel.onerror = null;
@@ -485,21 +473,19 @@ export class WebRTCWrapper {
         dataChannel.close()
     }
 
-
-    handleControlChannelFailure(peer: RTCPeerConnection, dataChannel: RTCDataChannel) {
+    _handleControlChannelFailure(peer: RTCPeerConnection, dataChannel: RTCDataChannel) {
         this._cleanupDataChannel(dataChannel)
         if (this.controlChannel === dataChannel) {
             this.controlChannel = null;
         }
         if (peer === this.peer) {
             //console.error("[WebRTCWrapper] datachannel failure")
-            this._createFreshPeerObject("datachannel failure");
+            this._retry(false, "datachannel failure")
         }
     }
 
-
     wait() {
-        this._createFreshPeerObject("waiting")
+        this._setConnectionState("waiting");
     }
 
 
@@ -542,7 +528,7 @@ export class WebRTCWrapper {
         }
     }
 
-    async updateConnectionType(peer: RTCPeerConnection) {
+    async _updateConnectionType(peer: RTCPeerConnection) {
         // this is the only way i could figure out to check if the connection is using the turn server
         // or if its "true" peer-to-peer. not sure if this is always accurate.
 
@@ -586,8 +572,8 @@ export class WebRTCWrapper {
                 peer.onconnectionstatechange = null;
                 return;
             } else {
-                this.connectionState = peer.connectionState
-                this._onConnectionStateChange(peer.connectionState);
+                this.rtcConnectionState = peer.connectionState
+                this._onRTCConnectionStateChange(peer.connectionState);
             }
         }
 
@@ -607,7 +593,7 @@ export class WebRTCWrapper {
                 return;
             } else {
                 if (peer.iceConnectionState === "failed") {
-                    this._createFreshPeerObject("ice failure")
+                    this._retry(true, "ice failure")
                 }
             }
         }
@@ -620,7 +606,7 @@ export class WebRTCWrapper {
                 this.peerObjectPristine = false;
                 console.log("negotiationneeded");
                 this.eventuallyNegotiate(peer).catch(err => {
-                    this._createFreshPeerObject("error during eventuallyNegotiate: " + err.name);
+                    this._retry(true, "error during eventuallyNegotiate" + err.name)
                 })
             }
         }
@@ -636,7 +622,6 @@ export class WebRTCWrapper {
         }
 
         peer.ontrack = (ev) => {
-            console.log("ontrack event")
             if (peer !== this.peer) {
                 peer.ontrack = null;
                 return;
@@ -646,6 +631,31 @@ export class WebRTCWrapper {
         }
     }
 
+    maxAttempts = 10;
+    currentAttempt = 1;
+    _retry(countAttempt:boolean, reason?: string) {
+
+        if (this.connectionState === "waiting" || this.connectionState === "failed") {
+            return;
+        }
+
+        this._createFreshPeerObject(reason)
+
+        if (countAttempt) {
+            this.currentAttempt++
+        }
+
+        if (this.currentAttempt > this.maxAttempts) {
+            this._setConnectionState("failed");
+            return;
+        }
+
+        this._setConnectionState("connecting")
+        this._negotiateToken()
+
+
+
+    }
 
     handleSignal(msg: ExtRTCSignalingMessage) {
 
@@ -664,8 +674,8 @@ export class WebRTCWrapper {
                 // if the remote peer has a new wss mid-negotiation, we can no longer guarantee the order of messages
                 this.peerSessionVersion = msg.version
 
-                if (!this.controlChannelOperational) {
-                    this._createFreshPeerObject("Remote peer has new websocket session.")
+                if (this.connectionState !== "connected") {
+                    this._retry(false, "Remote peer has new websocket session.")
                 }
             }
         }
@@ -679,7 +689,7 @@ export class WebRTCWrapper {
                 return;
             } else if (msg.token === this.token && this.tokenNegotiationState === "acknowledging") {
                 this.tokenNegotiationState = "synchronized"
-                this.setupControlChannel()
+                this._setupControlChannel()
             }
 
             if (msg.counter !== this.incomingMessageCounter) {
@@ -693,7 +703,7 @@ export class WebRTCWrapper {
             this._processSignal(msg, peer).catch((err) => {
                 if (err instanceof NegotiationError) {
                     console.error("Fatal error: " + err.message + ". Restarting negotiation.")
-                    this._createFreshPeerObject(err.name + ": " + err.message)
+                    this._retry(true, "NegotiationError");
                 } else {
                     console.error("Error while processing signal: " + err.message)
                 }
@@ -722,21 +732,21 @@ export class WebRTCWrapper {
                 this._createFreshPeerObject("accepted request " + msg.token + " acknowledging")
                 this.token = msg.token;
                 this.tokenNegotiationState = "acknowledging"
-                this.sendHeartbeat(this.peer)
+                this._sendHeartbeat()
                 //console.log("Token negotiation acknowledging token", this.token)
 
             }
         } else if (msg.type === "acknowledging") {
             if (this.tokenNegotiationState === "requesting" && msg.token === this.token) {
                 this.tokenNegotiationState = "synchronized"
-                this.sendHeartbeat(this.peer)
+                this._sendHeartbeat()
                 //console.log("Token negotiation synchronized with token", this.token)
-                this.setupControlChannel()
+                this._setupControlChannel()
             }
         } else if (msg.type === "synchronized" && msg.token === this.token && this.tokenNegotiationState === "acknowledging") {
             this.tokenNegotiationState = "synchronized"
-            this.sendHeartbeat(this.peer)
-            this.setupControlChannel()
+            this._sendHeartbeat()
+            this._setupControlChannel()
             //console.log("Token negotiation stable with token", this.token)
         }
     }
@@ -754,9 +764,10 @@ export class WebRTCWrapper {
 
         this.peerObjectPristine = false;
 
+        /*
         if (msg.type !== "ice-candidate") {
             console.log("processing", msg.type)
-        }
+        }*/
 
         try {
             const msgContent = JSON.parse(msg.content)
@@ -792,7 +803,7 @@ export class WebRTCWrapper {
                         console.warn("Error adding ICE candidate:", e)
                     }
                 } else if (!this.polite && peer.signalingState === "have-local-offer") {
-                    console.log("[WebRTCWrapper] ignored ice-candidate from" + this.peerId)
+                    //console.log("[WebRTCWrapper] ignored ice-candidate from" + this.peerId)
                 } else {
                     throw new NegotiationError("Received ice-candidate in incompatible signaling state " + peer.signalingState)
                 }
@@ -806,7 +817,6 @@ export class WebRTCWrapper {
 
 
     _sendSignal(peer: RTCPeerConnection, msg : PartialOutgoingMessage) {
-
         if (peer !== this.peer) {
             console.info("Suppressed stale outgoing message.")
             return;
@@ -843,7 +853,7 @@ export class WebRTCWrapper {
             } catch (e) {
                 const err = e as Error
                 console.error("Data channel failed to send message: " + err.name + ": " + err.message)
-                this.handleControlChannelFailure(peer, this.controlChannel)
+                this._handleControlChannelFailure(peer, this.controlChannel)
             }
             return;
         } else try {
@@ -852,4 +862,36 @@ export class WebRTCWrapper {
             console.error("error sending signal", err);
         }
     }
+
+
+    destroy(): void {
+
+        this.clearQueue()
+
+        this.peer.ontrack = null;
+        this.peer.onconnectionstatechange = null;
+        this.peer.onsignalingstatechange = null;
+        this.peer.ondatachannel = null;
+        this.peer.onnegotiationneeded = null;
+
+        if (this.bitratesIntervalId !== null) {
+            clearInterval(this.bitratesIntervalId);
+        }
+
+        if (this.sendHeartbeatInterval !== null) {
+            clearInterval(this.sendHeartbeatInterval);
+        }
+
+        if (this.checkHeartbeatInterval !== null) {
+            clearInterval(this.checkHeartbeatInterval);
+        }
+
+
+        this.peer.close() // event handlers attached to peer should be cleaned up internally
+
+        // @ts-expect-error ref cleanup
+        this.sendSignal = null
+
+    }
+
 }

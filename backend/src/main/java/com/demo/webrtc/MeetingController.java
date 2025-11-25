@@ -37,7 +37,7 @@ public class MeetingController {
                         return ResponseEntity.ok().body("Already in meeting.");
                     }
                     case MEETING_FULL -> {
-                        return ResponseEntity.badRequest().body("Meeting full.");
+                        return ResponseEntity.status(409).body("Meeting full.");
                     }
                 }
             } else {

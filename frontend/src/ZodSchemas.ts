@@ -75,10 +75,10 @@ export const EnvelopeSchema = z.object({
 
 export const SignalUnwrapSchema = z.object({
     kind: z.literal("signal"),
-    to: z.string().nonoptional(),
-    from: z.string().nonoptional(),
-    version: z.int().nonnegative().nonoptional(),
-    payload: z.string().nonoptional()
+    to: z.string(),
+    from: z.string(),
+    version: z.int().nonnegative(),
+    payload: z.string(),
 }).transform((msg) => ({
     to: msg.to,
     from: msg.from,
@@ -86,20 +86,17 @@ export const SignalUnwrapSchema = z.object({
     ...JSON.parse(msg.payload),
 })).pipe(ExtRTCSignalingMessageSchema)
 
-
 export const InfoUnwrapSchema = z.object({
     kind: z.literal("info"),
-    connected: z.record(z.string(), z.boolean()).nonoptional(),
+    connected: z.record(z.string(), z.boolean()),
 }).omit({kind:true})
-
 
 const OutgoingSignalEnvelopeSchema = z.object({
     kind: z.literal("signal"),
-    to: z.string().nonoptional(),
-    from: z.string().nonoptional(),
-    payload: z.string().nonoptional(),
+    to: z.string(),
+    from: z.string(),
+    payload: z.string(),
 })
-
 
 const InfoRequestSchema = z.object({
     kind: z.literal("requestInfo"),
