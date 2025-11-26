@@ -110,7 +110,6 @@ public class MeetingWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
-
         if (!validateSession(session)) {
             return;
         }
@@ -119,28 +118,23 @@ public class MeetingWebSocketHandler extends TextWebSocketHandler {
         String userId = (String) session.getAttributes().get("userId");
         log.info("[Meeting {}] Established new WSS {} for userId {}", meetingId, session.getId(), userId);
 
+        WebSocketSession oldSession = sessions.put(userId, session);
 
-        sessions.compute(userId, (k, currentSession) -> {
-            if (currentSession != null) {
-                try {
-                    log.info("[Meeting {}] Closing WSS {} (duplicate session)", meetingId, currentSession.getId());
-                    currentSession.close(WebSocketCloseStatus.DUPLICATE_SESSION.get());
-                } catch (Exception e) {
-                    //
-                }
+        var timeout = pendingTimeouts.remove(userId);
+        if (timeout != null) {
+            timeout.cancel(false);
+            log.info("[Meeting {}] Cancelled timeout on userId {}", meetingId, userId);
+        }
+
+        if (oldSession != null) {
+            try {
+                oldSession.close(WebSocketCloseStatus.DUPLICATE_SESSION.get());
+            } catch (IOException e) {
+                //
             }
-
-            ScheduledFuture<?> timeout = pendingTimeouts.remove(userId);
-            if (timeout != null) {
-                timeout.cancel(false);
-                log.info("[Meeting {}] Cancelled timeout on userId {}", meetingId, userId);
-            }
-
-            return session;
-        });
+        }
 
         executor.submit(this::broadcastCurrentUsers);
-
     }
 
     public void broadcastCurrentUsers() {
@@ -152,9 +146,10 @@ public class MeetingWebSocketHandler extends TextWebSocketHandler {
                         session.sendMessage(msg);
                     } catch (Exception e) {
                         //
+                        String userId = (String) session.getAttributes().get("userId");
+                        log.error("failed to send to send to session by {}. reason: {}", userId, e.getMessage());
                     }
                 }
-
             });
         }
     }
@@ -206,20 +201,19 @@ public class MeetingWebSocketHandler extends TextWebSocketHandler {
 
 
     @Override
-    public void afterConnectionClosed(WebSocketSession  session, CloseStatus status) {
+    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
 
         String userId = session.getAttributes().get("userId").toString();
         log.info("[Meeting {}] Closed WSS {} for userId {}", meetingId, session.getId(), userId);
-        sessions.compute(userId, (key, currentSession) -> {
-            if (currentSession != session) {
-                // user established new session before closing this one was handled
-                return currentSession;
-            } else {
-                scheduleTimeout(userId);
-                return null;
-            }
-        });
-        executor.submit(this::broadcastCurrentUsers);
+
+
+        boolean removed = sessions.remove(userId, session);
+
+        if (removed) {
+            scheduleTimeout(userId);
+            executor.submit(this::broadcastCurrentUsers);
+        }
+
     }
 
     public void handleSignalingMessage(WebSocketSession session, SignalingMessage message) {
@@ -271,7 +265,6 @@ public class MeetingWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void handleTextMessage(WebSocketSession session, TextMessage message) {
-
         if (!validateSession(session)) {
             return;
         }
